@@ -1,0 +1,281 @@
+﻿@page "/"
+@page "/home/{conversationId?}"
+@*rendermode InteractiveServer*@
+@rendermode @(new InteractiveServerRenderMode(prerender:false))
+@using Case.Ui3.Services
+@using Case.Ui3.Classes
+@using System.Text
+@using Microsoft.AspNetCore.Components.Web
+@inject IChatService IChatService
+@inject IJSRuntime JSRuntime
+@inject NavigationManager NavigationManager
+@inject ConversationStateService ConversationState
+
+<PageTitle>Home</PageTitle>
+
+@if (!string.IsNullOrWhiteSpace(prompt))
+{
+    <h1>Case: '@prompt'</h1>
+}
+@* @if (!string.IsNullOrWhiteSpace(conversationId))
+{
+    <div class="mb-2">
+        <span style="font-size:0.95em;">Conversation link: <code>@GetConversationUrl()</code></span>
+        <button class="btn btn-link btn-sm" @onclick="CopyConversationUrl" style="padding:0 0.5em;">Copy URL</button>
+        @if (copied)
+        {
+            <span style="color:green;font-size:0.9em;">Copied!</span>
+        }
+    </div>
+} *@
+
+<div class="chat-container">
+    <textarea disabled="disabled"
+              class="chatboxresult"
+              @bind="_conversationHistory"
+              @ref="chatboxRef"></textarea>
+</div>
+
+@if (!string.IsNullOrEmpty(prompt))
+{
+    <p>Type in '@prompt'</p>
+}
+
+<div class="input-container">
+    <input @bind-value="_inputMessage"
+           @bind-value:event="oninput"
+           @onkeydown="HandleKeyDown"
+           placeholder="Chat with me"
+           class="chatboxinput" />
+    <button class="btn btn-primary" @onclick="SendChat">Send</button>
+</div>
+
+<style>
+    .chat-container {
+        width: 100%;
+        margin-bottom: 10px;
+    }
+
+    .chatboxresult {
+        width: 100%;
+        min-height: 300px;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #ccc;
+        overflow-y: auto;
+        white-space: pre-wrap;
+    }
+
+    .input-container {
+        display: flex;
+        width: 100%;
+        gap: 8px;
+    }
+
+    .chatboxinput {
+        flex-grow: 1;
+        padding: 8px;
+        border-radius: 5px;
+        border: 1px solid #ccc;
+    }
+
+    .chatboxresult {
+        overflow-y: auto;
+        white-space: pre-wrap;
+    }
+</style>
+
+@code {
+    [Parameter]
+    [SupplyParameterFromQuery]
+    public string? conversationId { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "p")]
+    public string? prompt { get; set; }
+
+    private bool copied = false;
+
+    // Add this method to call when we need to save conversationId to a cookie
+    private async Task SaveConversationIdToCookie(string id)
+    {
+        await JSRuntime.InvokeVoidAsync("setCookie", "case_conversationId", id, 300); // Expires in 30 days
+    }
+
+    // Add this method to retrieve conversationId from cookie
+    private async Task<string> GetConversationIdFromCookie()
+    {
+        return await JSRuntime.InvokeAsync<string>("getCookie", "case_conversationId");
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Try to get conversationId from parameter first
+        if (string.IsNullOrWhiteSpace(conversationId))
+        {
+            // If not in parameter, try to get from cookie
+            conversationId = await GetConversationIdFromCookie();
+
+            // If still null, generate a new one
+            if (string.IsNullOrWhiteSpace(conversationId))
+            {
+                conversationId = Guid.NewGuid().ToString();
+            }
+
+            // Update URL with the conversation ID without refreshing the page
+            string query = !string.IsNullOrWhiteSpace(prompt) ? 
+                $"?p={Uri.EscapeDataString(prompt)}" :
+                "";
+            NavigationManager.NavigateTo($"/home/{conversationId}{query}", replace: true);
+
+            // Save to cookie for next visit
+            //await SaveConversationIdToCookie(conversationId);
+            return;
+        }
+        else
+        {
+            // Save current conversationId to cookie
+            //await SaveConversationIdToCookie(conversationId);
+        }
+
+        // Set the conversation ID in the shared state service
+        //ConversationState.SetConversationId(conversationId);
+
+        await SendChat();
+    }
+
+    private string GetConversationUrl()
+    {
+        return NavigationManager.Uri;
+    }
+
+    private async Task CopyConversationUrl()
+    {
+        string fullUrl = GetConversationUrl();
+        await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", fullUrl);
+        copied = true;
+        StateHasChanged();
+        await Task.Delay(1200);
+        copied = false;
+        StateHasChanged();
+    }
+
+    private string? _conversationHistory = string.Empty;
+    private string? _inputMessage = string.Empty;
+    private StringBuilder? _conversation = new StringBuilder();
+    private List<ChatMessage> chatMessages = new();
+    private bool isTyping = false;
+
+    // Reference to the textarea element
+    private ElementReference chatboxRef;
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_inputMessage))
+        {
+            await SendChat();
+        }
+    }
+
+    // After any rendering, scroll the chatbox to the bottom
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await ScrollChatToBottom();
+    }
+
+    // JavaScript interop method to scroll the textarea to the bottom
+    private async Task ScrollChatToBottom()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("scrollTextAreaToBottom", chatboxRef);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error scrolling: {ex.Message}");
+        }
+    }
+
+    private class ChatMessage
+    {
+        public string Content { get; set; } = string.Empty;
+        public bool IsUser { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
+
+    private async Task SendChat()
+    {
+        if (isTyping)
+            return; // Prevent multiple concurrent requests
+
+        var userMessageContent = _inputMessage;
+
+        // Only proceed if there's an actual message (except on initial load)
+        if (string.IsNullOrWhiteSpace(userMessageContent) && chatMessages.Count > 0)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(userMessageContent))
+        {
+            _conversation.AppendLine("User: " + userMessageContent);
+
+            // Add user message to chat
+            chatMessages.Add(new ChatMessage
+            {
+                Content = userMessageContent,
+                IsUser = true,
+                Timestamp = DateTime.Now
+            });
+        }
+
+        // Update UI with user message
+        _conversationHistory = _conversation.ToString();
+        _inputMessage = string.Empty;
+        StateHasChanged();
+        await ScrollChatToBottom();
+
+        // Create chat request
+        var chatRequest = new ChatRequest
+        {
+            conversationId = conversationId,
+            message = userMessageContent
+        };
+
+        // Store the current position before adding the typing indicator
+        int positionBeforeTyping = _conversation.Length;
+
+        // Show typing indicator
+        isTyping = true;
+        _conversation.AppendLine("Helper: (typing...)");
+        _conversationHistory = _conversation.ToString();
+        StateHasChanged();
+        await ScrollChatToBottom();
+
+        // Send request to function app
+        var response = await IChatService.SendMessageAsync(chatRequest);
+
+        // Simulate typing delay (1 second)
+        await Task.Delay(1000);
+
+        // Remove the typing indicator by reverting to the previous position
+        _conversation.Length = positionBeforeTyping;
+
+        // Add the actual response
+        _conversation.AppendLine("Helper: " + response);
+        _conversation.AppendLine();
+
+        // Add bot response to message list
+        chatMessages.Add(new ChatMessage
+        {
+            Content = response,
+            IsUser = false,
+            Timestamp = DateTime.Now
+        });
+
+        // Update UI with bot response
+        _conversationHistory = _conversation.ToString();
+        isTyping = false;
+        StateHasChanged();
+        await ScrollChatToBottom();
+    }
+}
