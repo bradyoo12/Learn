@@ -19,22 +19,22 @@ namespace Case.Chat.Functions
 {
     public class BaseFunction
     {
-        private readonly AzureOpenAISettings _openAISettings;
+        private readonly AzureOpenAISettings _azureOpenAISettings;
         private static readonly ConcurrentDictionary<string, ChatHistory> _chatHistories = new ConcurrentDictionary<string, ChatHistory>();
 
         public BaseFunction(IOptions<AzureOpenAISettings> openAISettings)
         {
-            _openAISettings = openAISettings.Value;
+            _azureOpenAISettings = openAISettings.Value;
         }
 
         private Kernel CreateKernel()
         {
             var builder = Kernel.CreateBuilder();
             builder.AddAzureOpenAIChatCompletion(
-                deploymentName: _openAISettings.DeploymentName,
-                apiKey: _openAISettings.ApiKey,
-                endpoint: _openAISettings.Endpoint,
-                modelId: _openAISettings.ModelId
+                deploymentName: _azureOpenAISettings.DeploymentName,
+                apiKey: _azureOpenAISettings.ApiKey,
+                endpoint: _azureOpenAISettings.Endpoint,
+                modelId: _azureOpenAISettings.ModelId
             );
 
             return builder.Build();
